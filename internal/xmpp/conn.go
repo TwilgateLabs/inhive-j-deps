@@ -3,7 +3,6 @@ package xmpp
 import (
 	"context"
 	"crypto/sha1"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -102,10 +101,17 @@ var jitsiCapsVersion = calculateJitsiCapsVersion()
 
 func Dial(ctx context.Context, host, room string, debug, insecure bool) (*Conn, error) {
 	url := fmt.Sprintf("wss://%s/xmpp-websocket?room=%s", host, room)
-	var httpClient *http.Client
-	if insecure {
-		httpClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	}
+	// SEC-5 (InHive fork): `insecure` parameter intentionally ignored. Upstream
+	// allowed InsecureSkipVerify for self-signed test SFUs, but that opens a
+	// MITM channel for our production users: ICE creds + auth tokens leak in
+	// plaintext over the XMPP control plane. We force standard CA validation
+	// for ALL Dial calls regardless of caller flag.
+	//
+	// The parameter is kept in the signature to preserve API compatibility
+	// with downstream callers (olcrtc engine/jitsi/jitsi.go and our wrappers).
+	// Removing it would force a coordinated bump.
+	_ = insecure
+	var httpClient *http.Client // nil → default validating client
 	ws, _, err := websocket.Dial(ctx, url, &websocket.DialOptions{
 		Subprotocols:    []string{"xmpp"},
 		CompressionMode: websocket.CompressionContextTakeover,
@@ -170,10 +176,9 @@ func Dial(ctx context.Context, host, room string, debug, insecure bool) (*Conn, 
 func fetchConfig(host string, insecure bool) (mucDomain, xmppDomain string) {
 	mucDomain = "conference." + host
 	xmppDomain = host
+	// SEC-5 (InHive fork): same rationale as Dial above. Force validating client.
+	_ = insecure
 	client := http.DefaultClient
-	if insecure {
-		client = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	}
 	resp, err := client.Get("https://" + host + "/config.js")
 	if err != nil {
 		return
