@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
-	"crypto/tls"
 	"encoding/base64"
 	"encoding/xml"
 	"fmt"
@@ -129,10 +128,17 @@ var jitsiMeetFeatures = []string{
 var jitsiCapsVersion = calculateJitsiCapsVersion()
 
 func Dial(ctx context.Context, host, room string, debug, insecure bool) (*Conn, error) {
-	var httpClient *http.Client
-	if insecure {
-		httpClient = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	}
+	// SEC-5 (InHive fork): `insecure` parameter intentionally ignored. Upstream
+	// allows InsecureSkipVerify for self-signed test SFUs, but that opens a
+	// MITM channel for our production users: ICE creds + auth tokens leak in
+	// plaintext over the XMPP control plane. We force standard CA validation
+	// for ALL transports (WebSocket here, BOSH fallback, and config fetch)
+	// regardless of caller flag. The parameter is kept in the signature to
+	// preserve API compatibility with downstream callers (olcrtc
+	// engine/jitsi/jitsi.go and our wrappers) — removing it would force a
+	// coordinated bump.
+	_ = insecure
+	var httpClient *http.Client // nil → default validating client
 
 	cfg := fetchConfig(host, insecure)
 
@@ -210,10 +216,9 @@ func fetchConfig(host string, insecure bool) jitsiConfig {
 		mucDomain:  "conference." + host,
 		xmppDomain: host,
 	}
+	// SEC-5 (InHive fork): same rationale as Dial — force validating client.
+	_ = insecure
 	client := http.DefaultClient
-	if insecure {
-		client = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	}
 	resp, err := client.Get("https://" + host + "/config.js")
 	if err != nil {
 		return cfg
@@ -1171,10 +1176,10 @@ type boshTransport struct {
 }
 
 func newBOSHTransport(boshURL string, insecure bool) *boshTransport {
+	// SEC-5 (InHive fork): BOSH fallback is a new transport added upstream
+	// (WebSocket→BOSH). Same MITM rationale as Dial — force validating client.
+	_ = insecure
 	client := http.DefaultClient
-	if insecure {
-		client = &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}}
-	}
 	bt := &boshTransport{
 		url:    boshURL,
 		client: client,
